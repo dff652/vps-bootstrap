@@ -161,9 +161,8 @@ if [ -z "${TS_AUTHKEY:-}" ]; then
       printf 'export TS_HOSTNAME=%s\n' "$_HN" >> "$ENV_FILE"
     fi
     if [ -z "${TS_TAGS:-}" ]; then
-      read -r -p "  TS_TAGS (默认 tag:vps，输入 - 表示不加): " _TG
-      [ -z "$_TG" ] && _TG="tag:vps"; [ "$_TG" = "-" ] && _TG=""
-      [ -n "$_TG" ] && printf 'export TS_TAGS=%s\n' "$_TG" >> "$ENV_FILE"
+      read -r -p "  TS_TAGS (可选，留空=不加；仅当 tailnet ACL 的 tagOwners 已定义才填，如 tag:vps): " _TG
+      [ -n "$_TG" ] && [ "$_TG" != "-" ] && printf 'export TS_TAGS=%s\n' "$_TG" >> "$ENV_FILE"
     fi
     if [ -z "${GH_TOKEN:-}" ]; then
       if read_secret "  GH_TOKEN (github_pat_…，私仓用；无则直接回车跳过): " "github_pat_" "ghp_"; then
@@ -254,35 +253,59 @@ if [ "$STATE" = "Running" ]; then
   ok "已 Running，不重复 up"
 else
   while :; do
-    echo "  执行: tailscale up --auth-key=*** --hostname=$HOSTNAME_USE --accept-routes (--reset)"
+    echo "  执行: tailscale up --auth-key=*** --hostname=$HOSTNAME_USE ${TS_TAGS:+--advertise-tags=$TS_TAGS} --accept-routes (--reset)"
     # shellcheck disable=SC2086
-    tailscale up \
+    up_out="$(tailscale up \
       --auth-key="$TS_AUTHKEY" \
       --hostname="$HOSTNAME_USE" \
       ${TS_TAGS:+--advertise-tags="$TS_TAGS"} \
       --accept-routes \
-      --reset
+      --reset 2>&1)"
+    [ -n "$up_out" ] && printf '%s\n' "$up_out" | sed 's/^/    /'
     sleep 2
     STATE="$(ts_state)"
     if [ "$STATE" = "Running" ]; then
       ok "登录成功，IP: $(tailscale ip -4 2>/dev/null | head -1)"; break
     fi
-    bad "登录后状态=$STATE —— key 可能失效/过期/属于别的 tailnet"
-    tail -n 8 "$TSD_LOG" 2>/dev/null | grep -iE "invalid key|expired|not valid" | head -3
-    # 登录失败时：交互环境直接回到 key 输入项，改写 .ts_env 后重试（不用手动 sed）
-    if [ -t 0 ]; then
-      echo "  先在 https://login.tailscale.com/admin/machines 确认能看到 gl-mt2500-3（= 账号/tailnet 选对了）"
-      read_secret "  重新粘一把 TS_AUTHKEY（tskey-auth-…，直接回车=放弃）: " "tskey-auth-" "tskey-" \
-        || { bad "放弃登录"; exit 1; }
-      TS_AUTHKEY="$_SECRET"
-      umask 077; sed -i '/^export TS_AUTHKEY=/d' "$ENV_FILE"
-      printf 'export TS_AUTHKEY=%s\n' "$TS_AUTHKEY" >> "$ENV_FILE"; chmod 600 "$ENV_FILE"
-      ok ".ts_env 的 TS_AUTHKEY 已更新；logout 清旧 session 后用新 key 真登录"
-      tailscale logout >/dev/null 2>&1 || true
+
+    # 按错误类型分流：tag 问题 ≠ key 问题，不能都让你重输 key
+    if printf '%s' "$up_out" | grep -qi "requested tags"; then
+      bad "tag '${TS_TAGS:-}' 在你 tailnet 的 ACL 里没定义/不允许 —— 这不是 key 的问题，重输 key 没用"
+      if [ -z "${TS_TAGS:-}" ]; then bad "已无 tag 仍报 tag 错，异常，看上面输出"; exit 1; fi
+      if [ -t 0 ]; then
+        read -r -p "  去掉 tag 重试? [Y=去掉(key 不变) / n=放弃]: " _c
+        case "$_c" in
+          ""|y|Y) : ;;
+          *) bad "放弃；想保留 tag 请在 tailnet ACL 的 tagOwners 里加 ${TS_TAGS}"; exit 1 ;;
+        esac
+      else
+        warn "非交互：自动去掉 TS_TAGS 重试"
+      fi
+      sed -i '/^export TS_TAGS=/d' "$ENV_FILE"; TS_TAGS=""
+      ok "已去掉 TS_TAGS，用同一把 key 重试登录"
       continue
     fi
-    bad "非交互无法重输。手动: sed -i '/^export TS_AUTHKEY=/d' $ENV_FILE && bash $0"
-    tail -n 15 "$TSD_LOG"; exit 1
+
+    if printf '%s' "$up_out" | grep -qiE "invalid key|not valid|expired"; then
+      bad "key 失效/过期/属于别的 tailnet"
+      if [ -t 0 ]; then
+        echo "  先在 https://login.tailscale.com/admin/machines 确认能看到 gl-mt2500-3（= 账号/tailnet 选对了）"
+        read_secret "  重新粘一把 TS_AUTHKEY（tskey-auth-…，直接回车=放弃）: " "tskey-auth-" "tskey-" \
+          || { bad "放弃登录"; exit 1; }
+        TS_AUTHKEY="$_SECRET"
+        umask 077; sed -i '/^export TS_AUTHKEY=/d' "$ENV_FILE"
+        printf 'export TS_AUTHKEY=%s\n' "$TS_AUTHKEY" >> "$ENV_FILE"; chmod 600 "$ENV_FILE"
+        ok ".ts_env 的 TS_AUTHKEY 已更新；logout 清旧 session 后用新 key 真登录"
+        tailscale logout >/dev/null 2>&1 || true
+        continue
+      fi
+      bad "非交互无法重输。手动: sed -i '/^export TS_AUTHKEY=/d' $ENV_FILE && bash $0"; exit 1
+    fi
+
+    # 其它未识别失败
+    bad "登录失败（状态=$STATE），未识别错误，看上面输出 / $TSD_LOG"
+    tail -n 12 "$TSD_LOG" 2>/dev/null | sed 's/^/    /'
+    exit 1
   done
 fi
 
