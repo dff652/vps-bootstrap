@@ -41,7 +41,7 @@ TSD_LOG=/var/log/tailscaled.log
 REPO_DIR="${REPO_DIR:-/data/homelab}"
 # 版本标记：publish_recover.sh 发布到公开仓时会把 "source" 替换成 homelab 短 sha+日期，
 # 所以一行流拉下来的副本会自报来自哪个 commit —— 对照 homelab HEAD 即知是否最新。
-RECOVER_VERSION="371b455 (2026-06-01)"
+RECOVER_VERSION="045cb47 (2026-06-01)"
 
 DO_PULL=1
 DO_EXIT=1
