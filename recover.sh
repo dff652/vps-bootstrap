@@ -41,7 +41,7 @@ TSD_LOG=/var/log/tailscaled.log
 REPO_DIR="${REPO_DIR:-/data/homelab}"
 # 版本标记：publish_recover.sh 发布到公开仓时会把 "source" 替换成 homelab 短 sha+日期，
 # 所以一行流拉下来的副本会自报来自哪个 commit —— 对照 homelab HEAD 即知是否最新。
-RECOVER_VERSION="045cb47 (2026-06-01)"
+RECOVER_VERSION="3050ac1 (2026-06-02)"
 
 DO_PULL=1
 DO_EXIT=1
@@ -190,14 +190,23 @@ if [ -z "${TS_AUTHKEY:-}" ]; then
 fi
 [ -n "${TS_AUTHKEY:-}" ] || { bad "$ENV_FILE 仍缺 TS_AUTHKEY"; exit 1; }
 # 校验前缀：tailscale auth key 应以 tskey- 开头。常见误粘 github_pat_（GH_TOKEN）。
-case "$TS_AUTHKEY" in
-  tskey-*) : ;;
-  *) bad "TS_AUTHKEY 前缀 '${TS_AUTHKEY:0:12}...' 不是 tskey-（疑似误粘 GH_TOKEN）"
-     echo "    修正: sed -i '/^export TS_AUTHKEY=/d' $ENV_FILE"
-     echo "          read -rs K   # 单独跑，粘真正的 tskey-auth-xxx 回车"
-     echo "          printf 'export TS_AUTHKEY=%s\\n' \"\$K\" >> $ENV_FILE && bash $0"
-     exit 1 ;;
-esac
+# 前缀错时交互直接回到输入（与 step3 一致），不再 exit 让你手动 sed。
+while [ "${TS_AUTHKEY#tskey-}" = "$TS_AUTHKEY" ]; do
+  bad "TS_AUTHKEY 前缀 '${TS_AUTHKEY:0:12}...' 不是 tskey-（疑似误粘 GH_TOKEN）"
+  if [ -t 0 ]; then
+    read_secret "  重新粘 TS_AUTHKEY（tskey-auth-…，直接回车=放弃）: " "tskey-auth-" "tskey-" \
+      || { bad "放弃"; exit 1; }
+    TS_AUTHKEY="$_SECRET"
+    umask 077; sed -i '/^export TS_AUTHKEY=/d' "$ENV_FILE"
+    printf 'export TS_AUTHKEY=%s\n' "$TS_AUTHKEY" >> "$ENV_FILE"; chmod 600 "$ENV_FILE"
+    ok ".ts_env 的 TS_AUTHKEY 已更新"
+  else
+    echo "    修正: sed -i '/^export TS_AUTHKEY=/d' $ENV_FILE"
+    echo "          read -rs K   # 单独跑，粘真正的 tskey-auth-xxx 回车"
+    echo "          printf 'export TS_AUTHKEY=%s\\n' \"\$K\" >> $ENV_FILE && bash $0"
+    exit 1
+  fi
+done
 HOSTNAME_USE="${TS_HOSTNAME:-$(uname -n)}"
 EXIT_NODE="${BOOT_EXIT_NODE:-gl-mt2500-3}"
 ok "TS_AUTHKEY 已加载 (前缀 ${TS_AUTHKEY:0:12}...)"
