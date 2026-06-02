@@ -42,7 +42,7 @@ TSD_LOG=/var/log/tailscaled.log
 REPO_DIR="${REPO_DIR:-/data/homelab}"
 # 版本标记：publish_recover.sh 发布到公开仓时会把 "source" 替换成 homelab 短 sha+日期，
 # 所以一行流拉下来的副本会自报来自哪个 commit —— 对照 homelab HEAD 即知是否最新。
-RECOVER_VERSION="d36bac6 (2026-06-02)"
+RECOVER_VERSION="82f2566 (2026-06-02)"
 
 DO_PULL=1
 DO_EXIT=1
@@ -144,9 +144,8 @@ exec > >(tee "$LOG") 2>&1
 if [ "$ONLY_RESET" -eq 1 ]; then
   hr "reset：重置 $ENV_FILE"
   if [ -f "$ENV_FILE" ]; then
-    cp "$ENV_FILE" "$ENV_FILE.bak" && chmod 600 "$ENV_FILE.bak"
+    mv "$ENV_FILE" "$ENV_FILE.bak"
     ok "旧配置已备份 → $ENV_FILE.bak（回退：mv $ENV_FILE.bak $ENV_FILE）"
-    rm -f "$ENV_FILE"
   else
     warn "$ENV_FILE 本就不存在，直接进交互新建"
   fi
@@ -338,16 +337,18 @@ else
   done
 fi
 
-# 登录后校验账号/tailnet 选对没：看不到 exit-node 多半是 key 来自别的账号
-if ! tailscale status 2>/dev/null | grep -qw "$EXIT_NODE"; then
-  warn "登录成功，但 tailnet 里看不到 $EXIT_NODE —— 这把 key 可能来自**别的账号/tailnet**"
+# 登录后探一次 exit-node 是否可见（错账号校验 + step4 复用，省一次 tailscale status）
+EXIT_NODE_SEEN=0
+tailscale status 2>/dev/null | grep -qw "$EXIT_NODE" && EXIT_NODE_SEEN=1
+if [ "$EXIT_NODE_SEEN" -eq 0 ]; then
+  warn "登录成功，但 tailnet 里看不到 $EXIT_NODE —— 这把 key 可能来自别的账号/tailnet"
   warn "对照 https://login.tailscale.com/admin/machines 应能看到 $EXIT_NODE；不对就换对账号的 key：bash $0 reset"
 fi
 
 # ---------- 4. exit node（inline）----------
 if [ "$DO_EXIT" -eq 1 ]; then
   hr "4. 借 $EXIT_NODE 出网 (exit node)"
-  if tailscale status 2>/dev/null | grep -qw "$EXIT_NODE"; then
+  if [ "$EXIT_NODE_SEEN" -eq 1 ]; then
     if tailscale set --exit-node="$EXIT_NODE" --exit-node-allow-lan-access=true --accept-routes=true 2>/dev/null; then
       ok "已设 exit-node=$EXIT_NODE"
     else
