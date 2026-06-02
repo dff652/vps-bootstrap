@@ -19,7 +19,9 @@
 
 ```bash
 # @main：URL 固定好记，但 jsDelivr 边缘缓存有延迟（见踩坑 6）
+# bash -n 是完整性门槛：网络抖动把脚本下载截断时直接拦下，不会跑半截
 curl -fsSL https://cdn.jsdelivr.net/gh/dff652/vps-bootstrap@main/recover.sh -o /root/recover.sh \
+  && bash -n /root/recover.sh \
   && chmod +x /root/recover.sh && bash /root/recover.sh
 
 # 急用最新（刚改完）：钉 commit 的 @<sha>，不受缓存影响（发布脚本会打印当次 @sha 一行流）
