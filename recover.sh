@@ -14,6 +14,7 @@
 #   bash recover.sh              # 完整自愈：拉起→exit node→git→自更新→验证
 #   bash recover.sh check        # 只读探测现状（新机器/任何状态都能跑，不改东西）
 #   bash recover.sh env          # 只交互建/补 .ts_env（缺字段才问，不跑后续；避免手敲 heredoc 易错）
+#   bash recover.sh reset        # 备份旧 .ts_env→.ts_env.bak（可回退），清空全字段重新交互建后跑完整流程
 #   bash recover.sh status       # 看 tailscale 当前状态
 #   bash recover.sh --no-pull    # 跳过 git 自更新
 #   bash recover.sh --no-exit    # 不设 exit node
@@ -41,13 +42,14 @@ TSD_LOG=/var/log/tailscaled.log
 REPO_DIR="${REPO_DIR:-/data/homelab}"
 # 版本标记：publish_recover.sh 发布到公开仓时会把 "source" 替换成 homelab 短 sha+日期，
 # 所以一行流拉下来的副本会自报来自哪个 commit —— 对照 homelab HEAD 即知是否最新。
-RECOVER_VERSION="3050ac1 (2026-06-02)"
+RECOVER_VERSION="d36bac6 (2026-06-02)"
 
 DO_PULL=1
 DO_EXIT=1
 ONLY_STATUS=0
 ONLY_CHECK=0
 ONLY_ENV=0
+ONLY_RESET=0
 
 ok()   { printf '  [OK]   %s\n' "$1"; }
 bad()  { printf '  [!]    %s\n' "$1"; }
@@ -88,6 +90,7 @@ while [ "$#" -gt 0 ]; do
     status)    ONLY_STATUS=1; shift ;;
     check)     ONLY_CHECK=1; shift ;;
     env|setenv) ONLY_ENV=1; shift ;;
+    reset)     ONLY_RESET=1; shift ;;
     -h|--help) sed -n '2,33p' "$0"; exit 0 ;;
     *) bad "未知参数: $1"; exit 2 ;;
   esac
@@ -136,6 +139,18 @@ fi
 exec > >(tee "$LOG") 2>&1
 
 [ "$(id -u)" -eq 0 ] || { bad "请用 root 跑"; exit 1; }
+
+# reset：备份旧配置（可回退）再清空，让 step0 走全字段交互重建
+if [ "$ONLY_RESET" -eq 1 ]; then
+  hr "reset：重置 $ENV_FILE"
+  if [ -f "$ENV_FILE" ]; then
+    cp "$ENV_FILE" "$ENV_FILE.bak" && chmod 600 "$ENV_FILE.bak"
+    ok "旧配置已备份 → $ENV_FILE.bak（回退：mv $ENV_FILE.bak $ENV_FILE）"
+    rm -f "$ENV_FILE"
+  else
+    warn "$ENV_FILE 本就不存在，直接进交互新建"
+  fi
+fi
 
 # ---------- 0. 读 / 建 / 补全环境 ----------
 hr "0. 读 $ENV_FILE"
@@ -321,6 +336,12 @@ else
     tail -n 12 "$TSD_LOG" 2>/dev/null | sed 's/^/    /'
     exit 1
   done
+fi
+
+# 登录后校验账号/tailnet 选对没：看不到 exit-node 多半是 key 来自别的账号
+if ! tailscale status 2>/dev/null | grep -qw "$EXIT_NODE"; then
+  warn "登录成功，但 tailnet 里看不到 $EXIT_NODE —— 这把 key 可能来自**别的账号/tailnet**"
+  warn "对照 https://login.tailscale.com/admin/machines 应能看到 $EXIT_NODE；不对就换对账号的 key：bash $0 reset"
 fi
 
 # ---------- 4. exit node（inline）----------

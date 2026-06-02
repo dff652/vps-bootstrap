@@ -10,7 +10,9 @@ auth key / PAT 都在各机的 `/root/.ts_env`，与本脚本分离。
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/dff652/vps-bootstrap@main/recover.sh -o /root/recover.sh \
+  && bash -n /root/recover.sh \
   && chmod +x /root/recover.sh && bash /root/recover.sh
 ```
 
+`bash -n` 是完整性门槛：网络抖动导致下载截断时直接拦下，不会跑半截脚本。
 直连断网时改用本机 SSH 推（见私有仓 `vps/push_bootstrap_to_vps.sh`）。
