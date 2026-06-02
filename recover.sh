@@ -42,7 +42,7 @@ TSD_LOG=/var/log/tailscaled.log
 REPO_DIR="${REPO_DIR:-/data/homelab}"
 # 版本标记：publish_recover.sh 发布到公开仓时会把 "source" 替换成 homelab 短 sha+日期，
 # 所以一行流拉下来的副本会自报来自哪个 commit —— 对照 homelab HEAD 即知是否最新。
-RECOVER_VERSION="82f2566 (2026-06-02)"
+RECOVER_VERSION="3db595b (2026-06-02)"
 
 DO_PULL=1
 DO_EXIT=1
@@ -363,16 +363,20 @@ fi
 
 # ---------- 5. git 凭据 + 代理（inline）----------
 hr "5. git 凭据 + 代理"
+# 代理：userspace 模式下 git 走 tailnet（公司库 clone / 私仓 pull）都必须经 SOCKS5，
+# 与 GH_TOKEN 无关 → 无条件配（否则没 token 的机器连公司库都拉不动，踩过）。
+git config --global http.proxy  "socks5h://localhost:${SOCKS_PORT}"
+git config --global https.proxy "socks5h://localhost:${SOCKS_PORT}"
+ok "git proxy 配好 (socks5h://localhost:$SOCKS_PORT)"
+# 凭据：仅 GitHub 私仓需要，有 GH_TOKEN 才配；公司 Bitbucket 等用各自凭据，不受影响。
 if [ -n "${GH_TOKEN:-}" ]; then
   umask 077
   echo "https://${GH_USER:-dff652}:${GH_TOKEN}@github.com" > "$CRED_FILE"
   chmod 600 "$CRED_FILE"
   git config --global credential.helper "store --file=$CRED_FILE"
-  git config --global http.proxy  "socks5h://localhost:${SOCKS_PORT}"
-  git config --global https.proxy "socks5h://localhost:${SOCKS_PORT}"
-  ok "git 凭据 + proxy 配好 (socks5h://localhost:$SOCKS_PORT)"
+  ok "GitHub 凭据已配（私仓免密 pull）"
 else
-  warn "$ENV_FILE 没 GH_TOKEN，跳过 git 凭据（私仓 pull 会要密码）"
+  warn "没 GH_TOKEN，跳过 GitHub 凭据（GitHub 私仓 pull 要密码；公司库/代理不受影响）"
 fi
 
 # ---------- 6. git pull 自更新仓库（解决 stale-repo）----------
