@@ -1,0 +1,20 @@
+# add-realm-landing.sh 产出的 proxy 片段长这样（这里是脱敏模板，占位符非真值）。
+# 用法：把下面整段（2 空格缩进）贴进 Clash Meta 配置的 proxies: 列表，
+#       再把节点名加进某个 proxy-group（select / url-test）。多落地各贴一段。
+#
+# 关键点：server/port 指向【中转机】，Reality 参数（uuid/pbk/sni/sid）用【落地机】的。
+proxies:
+  - name: "racknerd-中转"
+    type: vless
+    server: 1.2.3.4                # ← 中转机公网 IP（占位，换成你的；不是落地 IP）
+    port: 8889                     # ← 中转上为这台落地新开的监听端口
+    uuid: 00000000-0000-0000-0000-000000000000
+    network: tcp
+    tls: true
+    udp: true
+    flow: xtls-rprx-vision
+    servername: www.example.com    # ← 落地机的 SNI
+    reality-opts:
+      public-key: PUT_LANDING_PBK_HERE
+      short-id: "PUT_SID_HERE"
+    client-fingerprint: chrome
