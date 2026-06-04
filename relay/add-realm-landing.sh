@@ -25,7 +25,7 @@
 
 set -uo pipefail
 
-VERSION="1.7.0"
+VERSION="1.7.1"
 REALM_BIN="${REALM_BIN:-/root/realm}"
 NODE_DIR="${NODE_DIR:-/root/realm-nodes}"
 LOG="/var/log/add-realm-landing.log"
@@ -64,6 +64,28 @@ name_ok()  { [ -n "$1" ] && [ ${#1} -le 40 ] && [[ ! $1 =~ [@#:/[:space:]] ]]; }
 port_listening() { ss -tlnH "sport = :$1" 2>/dev/null | grep -q .; }
 realm_has_listen() { pgrep -af '[r]ealm' | grep -q -- "-l 0.0.0.0:$1\b"; }
 realm_has_remote() { pgrep -af '[r]ealm' | grep -q -- "-r $1:$2\b"; }
+
+# 列出当前 realm 转发（监听→落地），section1/8 共用；只取带 -l 的转发行（滤掉本脚本自身进程）
+show_forwards() { pgrep -af '[r]ealm' | grep -- '-l ' | sed -E 's/.*(-l [^ ]+).*(-r [^ ]+).*/  · \1 \2/' | sort -u; }
+
+# 校验型读取：env 值只试一次（不过即 die），交互则重输到合法。validator 打印原因（空=通过）。
+ask_valid() {
+  local var=$1 prompt=$2 vfn=$3 def=${4:-} envv reason
+  envv="${!var:-}"
+  while :; do
+    if [ -n "$envv" ]; then printf -v "$var" '%s' "$envv"
+    else printf -v "$var" '%s' ""; ask "$var" "$prompt" "$def"; fi
+    reason="$("$vfn" "${!var}")"
+    [ -z "$reason" ] && break
+    err "$reason"
+    [ -n "$envv" ] && die "环境变量 $var 非法：$reason"
+    warn "请重新输入"
+  done
+}
+v_name()   { name_ok "$1" || echo "落地名称非法（含 @#:/ 或空白、或过长）：$1 —— 别把链接粘进名称"; }
+v_listen() { is_port "$1" || { echo "端口不合法：$1"; return; }
+             realm_has_listen "$1" && { echo "已有 realm 进程在监听 $1，换一个"; return; }
+             port_listening   "$1" && { echo "端口 $1 已被占用（ss 可见 LISTEN），换一个"; return; }; }
 
 # systemd：可用且未被 NO_SYSTEMD 禁用时，新转发走 service（开机自启）；否则回退 nohup。
 SYSTEMD_DIR=/etc/systemd/system
@@ -273,11 +295,7 @@ command -v ufw >/dev/null  || warn "未装 ufw，将只用 iptables 放行"
 # ---- 1. 展示现状（已有转发，绝不触碰）----
 say
 say "当前 realm 转发（这些进程本脚本不会动）："
-if pgrep -af '[r]ealm' | grep -q -- '-l '; then
-  pgrep -af '[r]ealm' | sed -E 's/.*(-l [^ ]+).*(-r [^ ]+).*/  · \1 \2/' | sort -u
-else
-  say "  （无）"
-fi
+_fwd="$(show_forwards)"; [ -n "$_fwd" ] && printf '%s\n' "$_fwd" || say "  （无）"
 
 # ---- 2. 中转机公网 IP（拼客户端链接用）----
 RELAY_IP="${RELAY_IP:-$(curl -s4 --max-time 5 ifconfig.me 2>/dev/null || true)}"
@@ -371,37 +389,12 @@ fi
 is_port "$LANDING_PORT" || die "落地端口不合法：$LANDING_PORT"
 
 # 落地名：非法（含链接残留字符/过长）则重输，挡住"粘贴截断串进名称"
-NAME_ENV="${LANDING_NAME:-}"
-while :; do
-  if [ -n "$NAME_ENV" ]; then LANDING_NAME="$NAME_ENV"
-  else LANDING_NAME=""; ask LANDING_NAME "落地名称（节点备注/文件名，如 racknerd-2）" "${SUBNAME:-}"; fi
-  name_ok "$LANDING_NAME" && break
-  err "落地名称非法（含 @#:/ 或空白、或过长）：$LANDING_NAME —— 别把链接粘进名称"
-  [ -n "$NAME_ENV" ] && die "环境变量 LANDING_NAME 非法"
-  [ -t 0 ] || die "非交互下 LANDING_NAME 非法"
-done
+ask_valid LANDING_NAME "落地名称（节点备注/文件名，如 racknerd-2）" v_name "${SUBNAME:-}"
 SAFENAME="$(printf '%s' "$LANDING_NAME" | tr -c 'A-Za-z0-9._-' '_')"
 NODENAME="${SAFENAME}-中转"
 
-# 监听端口：交互时校验失败就重输，直到拿到一个空闲端口；非交互(env)失败即退出。
-LISTEN_PORT_ENV="${LISTEN_PORT:-}"
-while :; do
-  if [ -n "$LISTEN_PORT_ENV" ]; then
-    LISTEN_PORT="$LISTEN_PORT_ENV"          # 来自环境变量：只试一次
-  else
-    LISTEN_PORT=""                          # 清空 → ask 会重新提问
-    ask LISTEN_PORT "本中转机要新开的监听端口（如 8889）"
-  fi
-  reason=""
-  if   ! is_port "$LISTEN_PORT";          then reason="端口不合法：$LISTEN_PORT"
-  elif realm_has_listen "$LISTEN_PORT";   then reason="已有 realm 进程在监听 $LISTEN_PORT，换一个"
-  elif port_listening   "$LISTEN_PORT";   then reason="端口 $LISTEN_PORT 已被占用（ss 可见 LISTEN），换一个"
-  fi
-  [ -z "$reason" ] && break
-  err "$reason"
-  [ -n "$LISTEN_PORT_ENV" ] && die "环境变量 LISTEN_PORT=$LISTEN_PORT 不可用，改值重跑"
-  warn "请重新输入一个空闲端口"
-done
+# 监听端口：被占/重复/非法则重输，直到拿到一个空闲端口；非交互(env)失败即退出
+ask_valid LISTEN_PORT "本中转机要新开的监听端口（如 8889）" v_listen
 
 # ---- 4. 幂等 / 冲突校验（监听端口已在上面循环里校验过空闲）----
 say
@@ -488,7 +481,7 @@ else
   exit 1
 fi
 say "现存 realm 进程："
-pgrep -af '[r]ealm' | sed -E 's/.*(-l [^ ]+).*(-r [^ ]+).*/  · \1 \2/' | sort -u
+show_forwards
 
 # ---- 8.5. 连通性自检（L4 可达，不验 Reality 握手）----
 say
